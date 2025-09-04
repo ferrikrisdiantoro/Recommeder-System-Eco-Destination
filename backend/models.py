@@ -19,8 +19,8 @@ class Place(db.Model):
     category = db.Column(db.String(255), default="")
     city = db.Column(db.String(120), default="")
     address = db.Column(db.String(255), default="")
-    price_num = db.Column(db.Float, default=0.0)
-    price_str = db.Column(db.String(64), default="")
+    price_num = db.Column(db.Float, default=0.0)      # rupiah dalam angka
+    price_str = db.Column(db.String(64), default="")  # "Rp25,000" dsb
     rating_avg = db.Column(db.Float, default=0.0)
     image = db.Column(db.String(500), default="")
     gallery1 = db.Column(db.String(500), default="")
