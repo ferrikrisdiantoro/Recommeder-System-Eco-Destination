@@ -1,4 +1,27 @@
 1. python -m venv .venv
 2. source .venv/bin/activate
 3. pip install requirements.txt
-4. flask run --port=8000
+4. sudo systemctl enable --now postgresql
+5. sudo systemctl status postgresql   # pastikan active (running)
+6. sudo -u postgres psql
+
+############### masuk postgress ###############
+7. \password postgres 
+8. isi password dan verifikasi password
+9. \q
+############## keluar postgress ###############
+
+10. psql -h 127.0.0.1 -U postgres
+
+############### masuk postgress ###############
+11. CREATE USER eco_user WITH PASSWORD '12345';
+12. CREATE DATABASE eco OWNER eco_user;
+13. GRANT ALL PRIVILEGES ON DATABASE eco TO eco_user;
+14. \c eco
+15. GRANT ALL ON SCHEMA public TO eco_user;
+16. \q
+############## keluar postgress ###############
+
+17. export DATABASE_URL="postgresql+psycopg2://eco_user:12345@127.0.0.1:5432/eco"
+18. export JWT_SECRET_KEY="kuliah-secret"
+19. flask run --port=8000
