@@ -17,3 +17,5 @@ export function initAuthFromStorage() {
   const t = localStorage.getItem("token");
   if (t) setAuthToken(t);
 }
+
+initAuthFromStorage();

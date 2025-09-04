@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { useParams } from "react-router-dom";
 import { api } from "../api";
 import RatingStars from "../components/RatingStars";
@@ -8,36 +8,47 @@ export default function Detail() {
   const { id } = useParams();
   const [p, setP] = useState(null);
   const [comments, setComments] = useState([]);
+  const [ratingsPub, setRatingsPub] = useState({ avg: 0, count: 0, items: [] });
   const [myRating, setMyRating] = useState(0);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const load = async () => {
+  const loadPlace = useCallback(async () => {
+    const res = await api.get(`/api/places/${id}`);
+    const data = res.data || {};
+    setP(data);
+    // ambil my_rating dari server agar persist setelah refresh
+    setMyRating(Number(data.my_rating || 0));
+  }, [id]);
+
+  const loadComments = useCallback(async () => {
+    const cr = await api.get(`/api/comments?place_id=${id}`);
+    setComments(cr.data || []);
+  }, [id]);
+
+  const loadRatingsPub = useCallback(async () => {
+    const rr = await api.get(`/api/ratings/for_place?place_id=${id}`);
+    setRatingsPub(rr.data || { avg: 0, count: 0, items: [] });
+  }, [id]);
+
+  const loadAll = useCallback(async () => {
     setBusy(true);
     try {
-      const [pr, cr] = await Promise.all([
-        api.get(`/api/places/${id}`),
-        api.get(`/api/comments?place_id=${id}`),
-      ]);
-      setP(pr.data);
-      setComments(cr.data || []);
-    } catch (e) {
-      console.error(e);
+      await Promise.all([loadPlace(), loadComments(), loadRatingsPub()]);
     } finally {
       setBusy(false);
     }
-  };
+  }, [loadPlace, loadComments, loadRatingsPub]);
 
   useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+    loadAll();
+  }, [loadAll]);
 
   const bookmark = async () => {
     try {
       await api.post("/api/bookmarks", { place_id: Number(id) });
       alert("Ditambahkan ke bookmark");
-    } catch (e) {
+    } catch {
       alert("Login dulu untuk bookmark.");
     }
   };
@@ -48,9 +59,17 @@ export default function Detail() {
       return;
     }
     try {
-      await api.post("/api/ratings", { place_id: Number(id), rating: myRating });
+      const r = await api.post("/api/ratings", { place_id: Number(id), rating: myRating });
+      const { avg, count } = r.data || {};
+      // update angka agregat di UI tanpa reload penuh
+      setP((prev) => prev ? { ...prev, rating: avg, rating_count: count } : prev);
+      await loadRatingsPub(); // refresh daftar rating publik
       alert("Rating disimpan");
-    } catch (e) {
+
+      // Sinyal ke halaman HomeAuth agar refetch (dua jalur: event & localStorage)
+      window.dispatchEvent(new Event("recs:bump"));
+      localStorage.setItem("recs.bump", String(Date.now()));
+    } catch {
       alert("Login dulu untuk beri rating.");
     }
   };
@@ -61,8 +80,8 @@ export default function Detail() {
     try {
       await api.post("/api/comments", { place_id: Number(id), text: t });
       setText("");
-      await load();
-    } catch (e) {
+      await loadComments();
+    } catch {
       alert("Login dulu untuk komentar.");
     }
   };
@@ -92,6 +111,9 @@ export default function Detail() {
           </div>
           <div className="mt-1">
             Rating: <b>{formatRating(p.rating)}</b>
+            {typeof p.rating_count === "number" && (
+              <span className="text-gray-500"> ({p.rating_count})</span>
+            )}
           </div>
 
           {p.description && (
@@ -124,23 +146,7 @@ export default function Detail() {
         </div>
       </div>
 
-      <div className="mt-6">
-        <h2 className="font-semibold mb-2">Galeri</h2>
-        <div className="grid grid-cols-3 gap-3">
-          {[p.gallery1, p.gallery2, p.gallery3]
-            .filter(Boolean)
-            .map((g, idx) => (
-              <img
-                key={idx}
-                src={g}
-                alt={`Galeri ${idx + 1}`}
-                className="w-full h-40 object-cover rounded-lg"
-                loading="lazy"
-              />
-            ))}
-        </div>
-      </div>
-
+      {/* My rating */}
       <div className="mt-6">
         <h2 className="font-semibold mb-2">Beri Rating</h2>
         <RatingStars value={myRating} onChange={setMyRating} />
@@ -153,6 +159,29 @@ export default function Detail() {
         </button>
       </div>
 
+      {/* Rating publik seperti Google */}
+      <div className="mt-6">
+        <h2 className="font-semibold mb-2">Rating Pengunjung</h2>
+        <div className="text-sm text-gray-600 mb-2">
+          Rata-rata: <b>{formatRating(ratingsPub.avg)}</b>{" "}
+          {ratingsPub.count ? <>({ratingsPub.count} rating)</> : null}
+        </div>
+        <div className="space-y-2">
+          {ratingsPub.items.map((it) => (
+            <div key={it.id} className="bg-white p-3 rounded border">
+              <div className="text-sm text-gray-500">
+                {it.user_name} • {new Date(it.created_at).toLocaleString()}
+              </div>
+              <div className="font-medium">Rating: {formatRating(it.rating)}</div>
+            </div>
+          ))}
+          {ratingsPub.items.length === 0 && (
+            <div className="text-sm text-gray-500">Belum ada rating publik.</div>
+          )}
+        </div>
+      </div>
+
+      {/* Komentar publik */}
       <div className="mt-6">
         <h2 className="font-semibold mb-2">Komentar</h2>
 
@@ -163,6 +192,8 @@ export default function Detail() {
             value={text}
             onChange={(e) => setText(e.target.value)}
           />
+        </div>
+        <div className="mt-2">
           <button
             type="button"
             onClick={sendComment}
@@ -176,6 +207,7 @@ export default function Detail() {
           {comments.map((c) => (
             <div key={c.id} className="bg-white p-3 rounded border">
               <div className="text-sm text-gray-500">
+                {c.user_name ? `${c.user_name} • ` : ""}
                 {c.created_at ? new Date(c.created_at).toLocaleString() : ""}
               </div>
               <div>{c.text}</div>

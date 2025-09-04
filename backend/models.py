@@ -30,6 +30,9 @@ class Place(db.Model):
 
 class Rating(db.Model):
     __tablename__ = "ratings"
+    __table_args__ = (
+        db.UniqueConstraint("user_id", "place_id", name="uq_rating_user_place"),
+    )
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     place_id = db.Column(db.Integer, db.ForeignKey("places.id"), nullable=False, index=True)
@@ -46,6 +49,9 @@ class Comment(db.Model):
 
 class Bookmark(db.Model):
     __tablename__ = "bookmarks"
+    __table_args__ = (
+        db.UniqueConstraint("user_id", "place_id", name="uq_bookmark_user_place"),
+    )
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     place_id = db.Column(db.Integer, db.ForeignKey("places.id"), nullable=False, index=True)

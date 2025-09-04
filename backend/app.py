@@ -5,6 +5,7 @@ from flask_cors import CORS
 from flask_jwt_extended import (
     JWTManager, create_access_token, jwt_required, get_jwt_identity
 )
+from sqlalchemy import func
 
 from .models import db, User, Place, Rating, Comment, Bookmark
 from .recommender import RecommenderService
@@ -12,6 +13,7 @@ from .utils import (
     hash_password, check_password, seed_places_if_empty,
     place_to_dict, display_price
 )
+
 
 def create_app():
     app = Flask(__name__)
@@ -30,7 +32,6 @@ def create_app():
     with app.app_context():
         db.create_all()
         seed_places_if_empty(db)
-        # Debug tambahan biar tau koneksi DB kemana
         print("[DB CONNECTED]", db.engine.url)
 
     # Path model artefak
@@ -46,6 +47,26 @@ def create_app():
     )
 
     JWTManager(app)
+
+    # ===================== Helpers =====================
+    def recompute_place_rating(pid: int):
+        """Hitung ulang rata2 & jumlah rating untuk 1 place, simpan ke places.rating_avg."""
+        avg, cnt = db.session.query(
+            func.avg(Rating.rating), func.count(Rating.id)
+        ).filter(Rating.place_id == pid).first()
+        avg = float(avg or 0.0)
+        cnt = int(cnt or 0)
+        p = Place.query.get(pid)
+        if p:
+            p.rating_avg = avg
+            db.session.commit()
+        return avg, cnt
+
+    def get_my_rating(uid: int | None, pid: int) -> float | None:
+        if not uid:
+            return None
+        row = Rating.query.filter_by(user_id=uid, place_id=pid).first()
+        return float(row.rating) if row else None
 
     # ===================== AUTH =====================
     @app.post("/api/auth/register")
@@ -103,9 +124,29 @@ def create_app():
         return jsonify([place_to_dict(p) for p in rows])
 
     @app.get("/api/places/<int:pid>")
+    @jwt_required(optional=True)
     def place_detail(pid: int):
         p = Place.query.get_or_404(pid)
-        return jsonify(place_to_dict(p, detail=True))
+
+        # Hitung ulang agregat (aman & cepat untuk 1 tempat)
+        avg, cnt = db.session.query(
+            func.avg(Rating.rating), func.count(Rating.id)
+        ).filter(Rating.place_id == pid).first()
+        avg = float(avg or 0.0)
+        cnt = int(cnt or 0)
+
+        uid_raw = get_jwt_identity()
+        uid = int(uid_raw) if uid_raw is not None else None
+        mine = get_my_rating(uid, pid)
+
+        data = place_to_dict(p, detail=True)
+        # pastikan yang tampil adalah agregat terbaru
+        data.update({
+            "rating": avg,
+            "rating_count": cnt,
+            "my_rating": mine,
+        })
+        return jsonify(data)
 
     @app.get("/api/places/sample")
     def sample_places():
@@ -202,6 +243,7 @@ def create_app():
             if row: row.rating = 5.0
             else:   db.session.add(Rating(user_id=uid, place_id=pid, rating=5.0))
         db.session.commit()
+        # opsional: tidak perlu recompute massal di sini
         return jsonify({"ok": True, "count": len(ids)})
 
     # =============================== RATINGS ===============================
@@ -214,11 +256,14 @@ def create_app():
         val = float(d.get("rating", 0))
         if val < 1 or val > 5:
             return jsonify({"error": "Rating harus 1..5"}), 400
+
         row = Rating.query.filter_by(user_id=uid, place_id=pid).first()
         if row: row.rating = val
         else:   db.session.add(Rating(user_id=uid, place_id=pid, rating=val))
         db.session.commit()
-        return jsonify({"ok": True})
+
+        avg, cnt = recompute_place_rating(pid)
+        return jsonify({"ok": True, "my_rating": val, "avg": avg, "count": cnt})
 
     @app.get("/api/ratings/me")
     @jwt_required()
@@ -226,6 +271,35 @@ def create_app():
         uid = int(get_jwt_identity())
         rows = Rating.query.filter_by(user_id=uid).all()
         return jsonify([{"place_id": r.place_id, "rating": r.rating} for r in rows])
+
+    @app.get("/api/ratings/for_place")
+    @jwt_required(optional=True)
+    def ratings_for_place():
+        pid = int(request.args.get("place_id"))
+        avg, cnt = db.session.query(
+            func.avg(Rating.rating), func.count(Rating.id)
+        ).filter(Rating.place_id == pid).first()
+        avg = float(avg or 0.0); cnt = int(cnt or 0)
+
+        q = db.session.query(Rating, User)\
+            .join(User, Rating.user_id == User.id)\
+            .filter(Rating.place_id == pid)\
+            .order_by(Rating.created_at.desc()).all()
+        items = []
+        for r, u in q:
+            items.append({
+                "id": r.id,
+                "user_id": r.user_id,
+                "user_name": u.name,
+                "rating": float(r.rating),
+                "created_at": r.created_at.isoformat()
+            })
+
+        uid_raw = get_jwt_identity()
+        uid = int(uid_raw) if uid_raw is not None else None
+        mine = get_my_rating(uid, pid)
+
+        return jsonify({"avg": avg, "count": cnt, "my_rating": mine, "items": items})
 
     # ============================== COMMENTS ===============================
     @app.post("/api/comments")
@@ -244,11 +318,18 @@ def create_app():
     @app.get("/api/comments")
     def list_comments():
         pid = int(request.args.get("place_id"))
-        rows = Comment.query.filter_by(place_id=pid).order_by(Comment.created_at.desc()).all()
+        rows = db.session.query(Comment, User)\
+            .join(User, Comment.user_id == User.id)\
+            .filter(Comment.place_id == pid)\
+            .order_by(Comment.created_at.desc()).all()
         return jsonify([{
-            "id": c.id, "user_id": c.user_id, "place_id": c.place_id,
-            "text": c.text, "created_at": c.created_at.isoformat()
-        } for c in rows])
+            "id": c.id,
+            "user_id": c.user_id,
+            "user_name": u.name,
+            "place_id": c.place_id,
+            "text": c.text,
+            "created_at": c.created_at.isoformat()
+        } for c, u in rows])
 
     # ============================== BOOKMARKS ==============================
     @app.post("/api/bookmarks")
@@ -289,7 +370,7 @@ def create_app():
                 "place_name": p.place_name,
                 "city": p.city,
                 "category": p.category,
-                "price": display_price(p.price_str, p.price_num),  # string siap tampil
+                "price": display_price(p.price_str, p.price_num),
                 "rating": p.rating_avg or 0.0,
                 "image": p.image,
             })
